@@ -1,15 +1,18 @@
-from django.shortcuts import render, redirect, get_object_or_404
-from .models import Appointment
+from datetime import date
+
+from django.contrib.auth.decorators import login_required
+from django.contrib import messages
+from django.core.mail import send_mail
+from django.shortcuts import get_object_or_404, redirect, render
+
 from doctors.models import Doctor
 from patients.models import Patient
-from django.contrib.auth.decorators import login_required
-from datetime import datetime
-from django.core.mail import send_mail
+
+from .models import Appointment
 
 @login_required
 def book_appointment(request, slug):
     doctor = get_object_or_404(Doctor, slug=slug)
-    # patient = get_object_or_404(Patient, user=request.user)
 
     patients = Patient.objects.all()
 
@@ -21,7 +24,20 @@ def book_appointment(request, slug):
 
         patient = get_object_or_404(Patient, id=patient_id)
 
-        Appointment.objects.create(
+        if appointment_date and appointment_date < date.today().isoformat():
+            messages.error(request, "Appointment date cannot be in the past.")
+            return redirect('book_appointment', slug=doctor.slug)
+
+        conflict_exists = Appointment.objects.filter(
+            doctor=doctor,
+            appointment_date=appointment_date,
+            appointment_time=appointment_time,
+        ).exists()
+        if conflict_exists:
+            messages.error(request, "Selected slot is already booked for this doctor.")
+            return redirect('book_appointment', slug=doctor.slug)
+
+        appointment = Appointment.objects.create(
             patient=patient,
             doctor=doctor,
             appointment_date=appointment_date,
@@ -29,22 +45,19 @@ def book_appointment(request, slug):
             mode_of_consultation=mode_of_consultation
         )
 
-        # After saving appointment
-        send_mail(
-            subject='Appointment Confirmed',
-            message=f"Dear {Appointment.patient.full_name},\n\nYour appointment with Dr. {Appointment.doctor.clinician_profile.full_name} has been confirmed for {Appointment.date} at {Appointment.time}.\n\nThank you!",
-            from_email='noreply@healthcareplatform.com',
-            recipient_list=[Appointment.patient.email],
-            fail_silently=False,
-        )
-
-        send_mail(
-            subject='New Appointment Booked',
-            message=f"Dear Dr. {Appointment.doctor.clinician_profile.full_name},\n\nA new appointment has been booked with patient {Appointment.patient.full_name} on {Appointment.date} at {Appointment.time}.\n\nPlease be ready!",
-            from_email='noreply@healthcareplatform.com',
-            recipient_list=[Appointment.doctor.email],
-            fail_silently=False,
-        )
+        if patient.email:
+            send_mail(
+                subject='Appointment Confirmed',
+                message=(
+                    f"Dear {appointment.patient.full_name},\n\n"
+                    f"Your appointment with Dr. {appointment.doctor.full_name} "
+                    f"is confirmed for {appointment.appointment_date} at "
+                    f"{appointment.appointment_time}.\n\nThank you!"
+                ),
+                from_email='noreply@healthcareplatform.com',
+                recipient_list=[patient.email],
+                fail_silently=True,
+            )
 
         return redirect('appointment_success')
 
@@ -56,15 +69,11 @@ def appointment_success(request):
 
 
 @login_required
-def patient_appointments(request):
-    # Get clinician's patients
-    from patients.models import Patient
-    try:
-        patient = Patient.objects.get(id=request.GET.get('patient_id'))
-    except Patient.DoesNotExist:
-        patient = None
+def patient_appointments(request, patient_id):
+    patient = get_object_or_404(Patient, id=patient_id)
 
-    if not patient:
+    if not request.user.is_staff and patient.clinician_id != request.user.id:
+        messages.error(request, "You are not allowed to view this patient's appointments.")
         return redirect('clinician_dashboard')
     
     appointments = Appointment.objects.filter(patient=patient).order_by('appointment_date', 'appointment_time')
@@ -76,15 +85,7 @@ def patient_appointments(request):
 
 @login_required
 def doctor_appointments(request, doctor_slug):
-    from doctors.models import Doctor  # import here to avoid circular
-    try:
-        # doctor = Doctor.objects.get(slug=request.GET.get('doctor_slug'))
-        doctor = get_object_or_404(Doctor, slug=doctor_slug)
-    except Doctor.DoesNotExist:
-        doctor = None
-
-    if not doctor:
-        return redirect('clinician_dashboard')
+    doctor = get_object_or_404(Doctor, slug=doctor_slug)
 
     appointments = Appointment.objects.filter(doctor=doctor).order_by('appointment_date', 'appointment_time')
     
